@@ -8,6 +8,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { runAppleScript } from "run-applescript";
 import { run } from "@jxa/run";
+import { exec } from "child_process";
+import { fileURLToPath } from "url";
 
 // Define the ChatGPT tool
 const CHATGPT_TOOL: Tool = {
@@ -26,14 +28,18 @@ const CHATGPT_TOOL: Tool = {
 				description:
 					"The prompt to send to ChatGPT (required for ask operation)",
 			},
-			conversation_id: {
-				type: "string",
-				description:
-					"Optional conversation ID to continue a specific conversation",
-			},
-		},
-		required: ["operation"],
-	},
+                        conversation_id: {
+                                type: "string",
+                                description:
+                                        "Optional conversation ID to continue a specific conversation",
+                        },
+                        speak: {
+                                type: "boolean",
+                                description: "Read the ChatGPT response aloud",
+                        },
+                },
+                required: ["operation"],
+        },
 };
 
 const server = new Server(
@@ -49,7 +55,7 @@ const server = new Server(
 );
 
 // Check if ChatGPT app is installed and running
-async function checkChatGPTAccess(): Promise<boolean> {
+export async function checkChatGPTAccess(): Promise<boolean> {
 	try {
 		const isRunning = await runAppleScript(`
       tell application "System Events"
@@ -83,8 +89,9 @@ async function checkChatGPTAccess(): Promise<boolean> {
 
 // Function to send a prompt to ChatGPT
 async function askChatGPT(
-	prompt: string,
-	conversationId?: string,
+        prompt: string,
+        conversationId?: string,
+        speak?: boolean,
 ): Promise<string> {
 	await checkChatGPTAccess();
 	try {
@@ -244,12 +251,16 @@ async function askChatGPT(
 			cleanedResult.includes('\n\n') || // Multiple paragraphs suggest completeness
 			/^[A-Z].*[.!?]$/.test(cleanedResult); // Complete sentence structure
 			
-		if (cleanedResult.length > 0 && !isLikelyComplete) {
-			console.warn("Warning: ChatGPT response may be incomplete");
-		}
-		
-		return cleanedResult;
-	} catch (error) {
+                if (cleanedResult.length > 0 && !isLikelyComplete) {
+                        console.warn("Warning: ChatGPT response may be incomplete");
+                }
+
+                if (speak) {
+                        exec(`say ${JSON.stringify(cleanedResult)}`);
+                }
+
+                return cleanedResult;
+        } catch (error) {
 		console.error("Error interacting with ChatGPT:", error);
 		throw new Error(
 			`Failed to get response from ChatGPT: ${
@@ -353,13 +364,14 @@ async function getConversations(): Promise<string[]> {
 }
 
 function isChatGPTArgs(args: unknown): args is {
-	operation: "ask" | "get_conversations";
-	prompt?: string;
-	conversation_id?: string;
+        operation: "ask" | "get_conversations";
+        prompt?: string;
+        conversation_id?: string;
+        speak?: boolean;
 } {
-	if (typeof args !== "object" || args === null) return false;
+        if (typeof args !== "object" || args === null) return false;
 
-	const { operation, prompt, conversation_id } = args as any;
+        const { operation, prompt, conversation_id, speak } = args as any;
 
 	if (!operation || !["ask", "get_conversations"].includes(operation)) {
 		return false;
@@ -369,8 +381,9 @@ function isChatGPTArgs(args: unknown): args is {
 	if (operation === "ask" && !prompt) return false;
 
 	// Validate field types if present
-	if (prompt && typeof prompt !== "string") return false;
-	if (conversation_id && typeof conversation_id !== "string") return false;
+        if (prompt && typeof prompt !== "string") return false;
+        if (conversation_id && typeof conversation_id !== "string") return false;
+        if (speak !== undefined && typeof speak !== "boolean") return false;
 
 	return true;
 }
@@ -398,7 +411,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 						throw new Error("Prompt is required for ask operation");
 					}
 
-					const response = await askChatGPT(args.prompt, args.conversation_id);
+                                        const response = await askChatGPT(
+                                                args.prompt,
+                                                args.conversation_id,
+                                                args.speak,
+                                        );
 
 					return {
 						content: [
@@ -452,5 +469,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 
-await server.connect(transport);
-console.error("ChatGPT MCP Server running on stdio");
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+        await server.connect(transport);
+        console.error("ChatGPT MCP Server running on stdio");
+}
+
+export { askChatGPT, isChatGPTArgs };

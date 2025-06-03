@@ -7,6 +7,7 @@ This is a Model Context Protocol (MCP) tool that allows Claude to interact with 
 - Ask ChatGPT questions directly from Claude
 - View ChatGPT conversation history
 - Continue existing ChatGPT conversations
+- Optionally have ChatGPT read answers aloud with the `speak` flag
 
 ## Installation
 
@@ -93,6 +94,10 @@ Once installed, you can use the ChatGPT tool directly from Claude by asking ques
 - "Can you ask ChatGPT what the capital of France is?"
 - "Show me my recent ChatGPT conversations"
 - "Ask ChatGPT to explain quantum computing"
+- "Read the latest response aloud":
+  ```json
+  {"operation": "ask", "prompt": "Tell me a joke", "speak": true}
+  ```
 
 ## Troubleshooting
 

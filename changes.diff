@@ -1,0 +1,420 @@
+--- index.ts.backup	2025-06-07 21:34:02
++++ index.ts	2025-06-07 22:28:25
+@@ -12,13 +12,13 @@
+ // Define the ChatGPT tool
+ const CHATGPT_TOOL: Tool = {
+ 	name: "chatgpt",
+-	description: "Interact with the ChatGPT desktop app on macOS",
++	description: "Interact with the ChatGPT desktop app on macOS. Features: 1) 'ask' - Send prompts with customizable wait time (1-30s, default 5s) and get only the last ChatGPT response, 2) 'get_conversations' - List available conversations, 3) 'get_last_message' - Get the complete last ChatGPT response from current conversation",
+ 	inputSchema: {
+ 		type: "object",
+ 		properties: {
+ 			operation: {
+ 				type: "string",
+-				description: "Operation to perform: 'ask', 'get_conversations', or 'get_last_message'",
++				description: "Operation to perform: 'ask' (send prompt and get last response), 'get_conversations' (list chats), or 'get_last_message' (get complete last ChatGPT response)",
+ 				enum: ["ask", "get_conversations", "get_last_message"],
+ 			},
+ 			prompt: {
+@@ -31,6 +31,13 @@
+ 				description:
+ 					"Optional conversation ID to continue a specific conversation",
+ 			},
++			wait_time: {
++				type: "number",
++				description:
++					"Time in seconds to wait for ChatGPT response (default: 5, max: 30)",
++				minimum: 1,
++				maximum: 30,
++			},
+ 		},
+ 		required: ["operation"],
+ 	},
+@@ -85,9 +92,13 @@
+ async function askChatGPT(
+ 	prompt: string,
+ 	conversationId?: string,
++	waitTime: number = 5,
+ ): Promise<string> {
+ 	await checkChatGPTAccess();
+ 	try {
++		// Validate and set wait time
++		const safeWaitTime = Math.min(Math.max(waitTime, 1), 30);
++		
+ 		// Function to check if text contains Korean characters
+ 		const hasKorean = (text: string): boolean => {
+ 			return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text);
+@@ -149,30 +160,27 @@
+           key code 36  -- return key
+           delay 1
+           
+-          -- Wait for ChatGPT to respond
+-          delay 5
++          -- Wait for ChatGPT to respond (user-specified wait time)
++          delay ${safeWaitTime}
+           
+-          -- Get the conversation text
+-          set conversationText to {}
+-          try
+-            set allUIElements to entire contents of window 1
+-            repeat with i from 1 to count of allUIElements
+-              try
+-                set currentElement to item i of allUIElements
+-                if (role of currentElement) is "AXStaticText" then
+-                  set elementText to (description of currentElement)
+-                  if elementText is not missing value and elementText is not "" then
+-                    set end of conversationText to elementText
+-                  end if
++          -- Get last text element (simple approach like getLastMessage)
++          set allElements to entire contents of window 1
++          set recentTexts to {}
++          
++          repeat with elem in allElements
++            try
++              if (role of elem) is "AXStaticText" then
++                set elemText to (description of elem)
++                if elemText is not missing value and elemText is not "" then
++                  set end of recentTexts to elemText
+                 end if
+-              end try
+-            end repeat
+-          end try
++              end if
++            end try
++          end repeat
+           
+-          -- Return the conversation text
+-          if (count of conversationText) > 0 then
+-            set AppleScript's text item delimiters to linefeed
+-            return conversationText as text
++          -- Return last text element
++          if (count of recentTexts) > 0 then
++            return item -1 of recentTexts
+           else
+             return "No response received from ChatGPT"
+           end if
+@@ -202,7 +210,7 @@
+ 			/^[A-Z].*[.!?]$/.test(cleanedResult); // Complete sentence structure
+ 			
+ 		if (cleanedResult.length > 0 && !isLikelyComplete) {
+-			console.warn("Warning: ChatGPT response may be incomplete");
++			console.warn(`Warning: ChatGPT response may be incomplete (waited ${safeWaitTime}s)`);
+ 		}
+ 		
+ 		return cleanedResult;
+@@ -216,101 +224,48 @@
+ 	}
+ }
+ 
+-// Function to get the last message from ChatGPT conversation
++// Function to get the last ChatGPT message
+ async function getLastMessage(): Promise<string> {
+ 	await checkChatGPTAccess();
+ 	try {
+ 		const script = `
+-      tell application "ChatGPT"
+-        activate
+-        delay 1
+-      end tell
+-      
+-      tell application "System Events"
+-        tell process "ChatGPT"
+-          -- Check if ChatGPT window exists
+-          if not (exists window 1) then
+-            return "ChatGPT window not found"
+-          end if
+-          
+-          -- Get all text elements
+-          set allTexts to {}
+-          try
+-            set allUIElements to entire contents of window 1
+-            repeat with i from 1 to count of allUIElements
+-              try
+-                set currentElement to item i of allUIElements
+-                if (role of currentElement) is "AXStaticText" then
+-                  set elementText to (description of currentElement)
+-                  if elementText is not missing value and elementText is not "" then
+-                    set end of allTexts to elementText
+-                  end if
+-                end if
+-              end try
+-            end repeat
+-          end try
+-          
+-          -- Find the last ChatGPT response
+-          set totalTexts to count of allTexts
+-          if totalTexts = 0 then
+-            return "No messages found"
+-          end if
+-          
+-          -- Look for user message pattern (working backwards)
+-          set chatGPTResponse to {}
+-          set foundUserMessage to false
+-          
+-          repeat with j from totalTexts to 1 by -1
+-            set currentText to item j of allTexts
+-            set textLength to length of currentText
+-            
+-            -- Check if this looks like a user message
+-            -- User messages are typically 10-100 chars, natural sentences
+-            if not foundUserMessage and textLength > 10 and textLength < 200 then
+-              -- Check if it's not a table cell or code snippet
+-              if currentText does not contain "✅" and currentText does not contain "❌" and currentText does not contain "<" and currentText does not contain ">" then
+-                -- This might be a user message, so everything after this is ChatGPT response
+-                set foundUserMessage to true
+-                -- Don't include the user message itself
+-              else
+-                -- Still part of ChatGPT response
+-                set beginning of chatGPTResponse to currentText
+-              end if
+-            else if foundUserMessage then
+-              -- We've found the boundary, stop here
+-              exit repeat
+-            else
+-              -- Still collecting ChatGPT response
+-              set beginning of chatGPTResponse to currentText
+-            end if
+-          end repeat
+-          
+-          -- If no user message found, take last 10 elements as ChatGPT response
+-          if not foundUserMessage then
+-            set chatGPTResponse to {}
+-            set startIndex to totalTexts - 9
+-            if startIndex < 1 then set startIndex to 1
+-            repeat with k from startIndex to totalTexts
+-              set end of chatGPTResponse to item k of allTexts
+-            end repeat
+-          end if
+-          
+-          -- Combine all parts of the ChatGPT response
+-          if (count of chatGPTResponse) > 0 then
+-            set AppleScript's text item delimiters to linefeed
+-            set fullResponse to chatGPTResponse as text
+-            set AppleScript's text item delimiters to ""
+-            return fullResponse
+-          else
+-            return "No ChatGPT response found"
+-          end if
+-        end tell
+-      end tell
+-    `;
++			tell application "ChatGPT"
++				activate
++				delay 1
++			end tell
++			
++			tell application "System Events"
++				tell process "ChatGPT"
++					if not (exists window 1) then
++						return "ChatGPT window not found"
++					end if
++					
++					-- 마지막 몇개 텍스트 요소만 가져오기 (간단한 버전)
++					set allElements to entire contents of window 1
++					set recentTexts to {}
++					
++					repeat with elem in allElements
++						try
++							if (role of elem) is "AXStaticText" then
++								set elemText to (description of elem)
++								if elemText is not missing value and elemText is not "" then
++									set end of recentTexts to elemText
++								end if
++							end if
++						end try
++					end repeat
++					
++					-- 마지막 텍스트 요소 반환 (가장 간단한 방법)
++					if (count of recentTexts) > 0 then
++						return item -1 of recentTexts
++					else
++						return "No messages found"
++					end if
++				end tell
++			end tell
++		`;
+ 		
+ 		const result = await runAppleScript(script);
+-		
+-		// Clean up the result
+ 		let cleanedResult = result
+ 			.replace(/Regenerate( response)?/g, '')
+ 			.replace(/Continue generating/g, '')
+@@ -333,57 +288,67 @@
+ 	try {
+ 		// Run AppleScript to get conversations from ChatGPT app
+ 		const result = await runAppleScript(`
++      -- Check if ChatGPT is running
+       tell application "System Events"
+-        -- Check if ChatGPT process exists
+-        if not (exists process "ChatGPT") then
++        if not (application process "ChatGPT" exists) then
+           return "ChatGPT is not running"
+         end if
+-        
+-        tell process "ChatGPT"
+-          -- Check if ChatGPT window exists
+-          if not (exists window 1) then
+-            return "No ChatGPT window found"
+-          end if
+-          
+-          -- Activate ChatGPT and give it time to respond
+-          tell application "ChatGPT" to activate
+-          delay 1.5
+-          
+-          -- Try to get conversation titles
+-          set conversationsList to {}
+-          
+-          try
+-            -- Try to find conversation buttons in the sidebar
+-            -- Look for buttons in the scroll area (sidebar)
+-            if exists scroll area 1 of group 1 of splitter group 1 of group 1 of window 1 then
+-              set sidebarArea to scroll area 1 of group 1 of splitter group 1 of group 1 of window 1
+-              
+-              -- Get all UI elements in the sidebar
+-              set allElements to every UI element of sidebarArea
+-              repeat with elem in allElements
+-                try
+-                  -- Check if element is a button and has a name/title
+-                  if class of elem is button then
+-                    set buttonTitle to name of elem
+-                    if buttonTitle is not missing value and buttonTitle is not "" and buttonTitle is not "New chat" then
+-                      set end of conversationsList to buttonTitle
+-                    end if
+-                  end if
+-                end try
+-              end repeat
++      end tell
++
++      tell application "ChatGPT"
++        -- Activate ChatGPT and give it time to respond
++        activate
++        delay 1.5
++
++        tell application "System Events"
++          tell process "ChatGPT"
++            -- Check if ChatGPT window exists
++            if not (exists window 1) then
++              return "No ChatGPT window found"
+             end if
+             
+-            -- If no conversations found, return appropriate message
+-            if (count of conversationsList) is 0 then
+-              return "No conversations found"
+-            end if
++            -- Try to get conversation titles with multiple approaches
++            set conversationsList to {}
+             
+-            return conversationsList
++            try
++              -- First attempt: try buttons in group 1 of group 1
++              if exists group 1 of group 1 of window 1 then
++                set chatButtons to buttons of group 1 of group 1 of window 1
++                repeat with chatButton in chatButtons
++                  set buttonName to name of chatButton
++                  if buttonName is not "New chat" then
++                    set end of conversationsList to buttonName
++                  end if
++                end repeat
++              end if
++              
++              -- If we didn't find any conversations, try an alternative approach
++              if (count of conversationsList) is 0 then
++                -- Try to find UI elements by accessibility description
++                set uiElements to UI elements of window 1
++                repeat with elem in uiElements
++                  try
++                    if exists (attribute "AXDescription" of elem) then
++                      set elemDesc to value of attribute "AXDescription" of elem
++                      if elemDesc is not "New chat" and elemDesc is not "" then
++                        set end of conversationsList to elemDesc
++                      end if
++                    end if
++                  end try
++                end repeat
++              end if
++              
++              -- If still no conversations found, return a specific message
++              if (count of conversationsList) is 0 then
++                return "No conversations found"
++              end if
++            on error errMsg
++              -- Return error message for debugging
++              return "Error: " & errMsg
++            end try
+             
+-          on error errMsg
+-            -- Return error message for debugging
+-            return "Error accessing ChatGPT UI: " & errMsg
+-          end try
++            return conversationsList
++          end tell
+         end tell
+       end tell
+     `);
+@@ -415,15 +380,14 @@
+ 	operation: "ask" | "get_conversations" | "get_last_message";
+ 	prompt?: string;
+ 	conversation_id?: string;
++	wait_time?: number;
+ } {
+ 	if (typeof args !== "object" || args === null) return false;
+ 
+-	const { operation, prompt, conversation_id } = args as any;
++	const { operation, prompt, conversation_id, wait_time } = args as any;
+ 
+ 	if (!operation || !["ask", "get_conversations", "get_last_message"].includes(operation)) {
+ 		return false;
+-	}(operation)) {
+-		return false;
+ 	}
+ 
+ 	// Validate required fields based on operation
+@@ -432,6 +396,7 @@
+ 	// Validate field types if present
+ 	if (prompt && typeof prompt !== "string") return false;
+ 	if (conversation_id && typeof conversation_id !== "string") return false;
++	if (wait_time && typeof wait_time !== "number") return false;
+ 
+ 	return true;
+ }
+@@ -459,7 +424,11 @@
+ 						throw new Error("Prompt is required for ask operation");
+ 					}
+ 
+-					const response = await askChatGPT(args.prompt, args.conversation_id);
++					const response = await askChatGPT(
++						args.prompt, 
++						args.conversation_id,
++						args.wait_time || 5
++					);
+ 
+ 					return {
+ 						content: [
+@@ -503,26 +472,6 @@
+ 					};
+ 				}
+ 
+-				case "get_last_message": {
+-					const lastMessage = await getLastMessage();
+-
+-					return {
+-						content: [
+-							{
+-								type: "text",
+-								text: lastMessage || "No last message found.",
+-							},
+-						],
+-						isError: false,
+-					};
+-				}}`
+-										: "No conversations found in ChatGPT.",
+-							},
+-						],
+-						isError: false,
+-					};
+-				}
+-
+ 				default:
+ 					throw new Error(`Unknown operation: ${args.operation}`);
+ 			}

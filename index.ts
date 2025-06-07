@@ -12,7 +12,7 @@ import { run } from "@jxa/run";
 // Define the ChatGPT tool
 const CHATGPT_TOOL: Tool = {
 	name: "chatgpt",
-	description: "Interact with the ChatGPT desktop app on macOS. Features: 1) 'ask' - Send prompts with customizable wait time (1-30s, default 12s) and get only the last ChatGPT response, 2) 'get_conversations' - List available conversations, 3) 'get_last_message' - Get the complete last ChatGPT response from current conversation",
+	description: "Interact with the ChatGPT desktop app on macOS. Features: 1) 'ask' - Send prompts with customizable wait time (1-30s, default 12s) and get only the last ChatGPT response, 2) 'get_conversations' - List available conversations, 3) 'get_last_message' - Get the complete last ChatGPT response from current conversation. Wait time guidelines: Quick responses (greetings, simple questions): 5-8s, Medium responses (explanations, simple code): 10-15s, Complex responses (detailed analysis, long code): 15-20s, Very complex responses (comprehensive analysis): 20-30s.",
 	inputSchema: {
 		type: "object",
 		properties: {
@@ -34,7 +34,7 @@ const CHATGPT_TOOL: Tool = {
 			wait_time: {
 				type: "number",
 				description:
-					"Time in seconds to wait for ChatGPT response (default: 12, max: 30)",
+					"Time in seconds to wait for ChatGPT response (default: 12, max: 30). Choose based on expected response complexity: 5-8s for quick responses (greetings, simple questions), 10-15s for medium responses (explanations, simple code), 15-20s for complex responses (detailed analysis, long code), 20-30s for very complex responses (comprehensive analysis, extensive code).",
 				minimum: 1,
 				maximum: 30,
 			},

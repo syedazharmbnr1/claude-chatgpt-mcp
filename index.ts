@@ -240,7 +240,7 @@ async function getLastMessage(): Promise<string> {
 						return "ChatGPT window not found"
 					end if
 					
-					-- 마지막 몇개 텍스트 요소만 가져오기 (간단한 버전)
+					-- Get only the last few text elements (simplified version)
 					set allElements to entire contents of window 1
 					set recentTexts to {}
 					
@@ -255,7 +255,7 @@ async function getLastMessage(): Promise<string> {
 						end try
 					end repeat
 					
-					-- 마지막 텍스트 요소 반환 (가장 간단한 방법)
+					-- Return the last text element (simplest method)
 					if (count of recentTexts) > 0 then
 						return item -1 of recentTexts
 					else

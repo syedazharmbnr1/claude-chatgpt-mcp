@@ -12,14 +12,14 @@ import { run } from "@jxa/run";
 // Define the ChatGPT tool
 const CHATGPT_TOOL: Tool = {
 	name: "chatgpt",
-	description: "Interact with the ChatGPT desktop app on macOS",
+	description: "Interact with the ChatGPT desktop app on macOS. Features: 1) 'ask' - Send prompts with customizable wait time (1-30s, default 5s) and get only the last ChatGPT response, 2) 'get_conversations' - List available conversations, 3) 'get_last_message' - Get the complete last ChatGPT response from current conversation",
 	inputSchema: {
 		type: "object",
 		properties: {
 			operation: {
 				type: "string",
-				description: "Operation to perform: 'ask' or 'get_conversations'",
-				enum: ["ask", "get_conversations"],
+				description: "Operation to perform: 'ask' (send prompt and get last response), 'get_conversations' (list chats), or 'get_last_message' (get complete last ChatGPT response)",
+				enum: ["ask", "get_conversations", "get_last_message"],
 			},
 			prompt: {
 				type: "string",
@@ -30,6 +30,13 @@ const CHATGPT_TOOL: Tool = {
 				type: "string",
 				description:
 					"Optional conversation ID to continue a specific conversation",
+			},
+			wait_time: {
+				type: "number",
+				description:
+					"Time in seconds to wait for ChatGPT response (default: 5, max: 30)",
+				minimum: 1,
+				maximum: 30,
 			},
 		},
 		required: ["operation"],
@@ -85,9 +92,18 @@ async function checkChatGPTAccess(): Promise<boolean> {
 async function askChatGPT(
 	prompt: string,
 	conversationId?: string,
+	waitTime: number = 5,
 ): Promise<string> {
 	await checkChatGPTAccess();
 	try {
+		// Validate and set wait time
+		const safeWaitTime = Math.min(Math.max(waitTime, 1), 30);
+		
+		// Function to check if text contains Korean characters
+		const hasKorean = (text: string): boolean => {
+			return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text);
+		};
+
 		// Function to properly encode text for AppleScript, including handling of Chinese characters
 		const encodeForAppleScript = (text: string): string => {
 			// Only escape double quotes, leave other characters as is
@@ -95,134 +111,83 @@ async function askChatGPT(
 		};
 
 		const encodedPrompt = encodeForAppleScript(prompt);
-		
-		// Save original clipboard content
-		const saveClipboardScript = `
-			set savedClipboard to the clipboard
-			return savedClipboard
-		`;
-		const originalClipboard = await runAppleScript(saveClipboardScript);
-		const encodedOriginalClipboard = encodeForAppleScript(originalClipboard);
+		const useClipboard = hasKorean(prompt);
 		
 		const script = `
       tell application "ChatGPT"
         activate
-        delay 1
-        tell application "System Events"
-          tell process "ChatGPT"
-            ${
-							conversationId
-								? `
-              try
-                click button "${conversationId}" of group 1 of group 1 of window 1
-                delay 1
-              end try
-            `
-								: ""
-						}
-            -- Clear any existing text in the input field
-            keystroke "a" using {command down}
-            keystroke (ASCII character 8) -- Delete key
-            delay 0.5
-            
-            -- Set the clipboard to the prompt text
-            set the clipboard to "${encodedPrompt}"
-            
-            -- Paste the prompt and send it
-            keystroke "v" using {command down}
-            delay 0.5
-            keystroke return
-            
-            -- Wait for the response with dynamic detection
-            set maxWaitTime to 120 -- Maximum wait time in seconds
-            set waitInterval to 1 -- Check interval in seconds
-            set totalWaitTime to 0
-            set previousText to ""
-            set stableCount to 0
-            set requiredStableChecks to 3 -- Number of consecutive stable checks required
-            
-            repeat while totalWaitTime < maxWaitTime
-              delay waitInterval
-              set totalWaitTime to totalWaitTime + waitInterval
-              
-              -- Get current text
-              set frontWin to front window
-              set allUIElements to entire contents of frontWin
-              set conversationText to {}
-              repeat with e in allUIElements
-                try
-                  if (role of e) is "AXStaticText" then
-                    set end of conversationText to (description of e)
-                  end if
-                end try
-              end repeat
-              
-              set AppleScript's text item delimiters to linefeed
-              set currentText to conversationText as text
-              
-              -- Check if text has stabilized (not changing anymore)
-              if currentText is equal to previousText then
-                set stableCount to stableCount + 1
-                if stableCount ≥ requiredStableChecks then
-                  -- Text has been stable for multiple checks, assume response is complete
-                  exit repeat
+        delay 2
+      end tell
+      
+      tell application "System Events"
+        tell process "ChatGPT"
+          -- Check if ChatGPT window exists
+          if not (exists window 1) then
+            return "ChatGPT window not found"
+          end if
+          
+          ${
+						conversationId
+							? `
+            try
+              click button "${conversationId}" of group 1 of group 1 of window 1
+              delay 1
+            end try
+          `
+							: ""
+					}
+          
+          -- ChatGPT accepts direct keyboard input, no need to click specific elements
+          -- Clear any existing text using key codes
+          key code 0 using {command down}  -- cmd+a
+          delay 0.5
+          key code 51  -- delete key
+          delay 1.5
+          
+          ${useClipboard ? `
+          -- Use clipboard + key codes for Korean text
+          set the clipboard to "${encodedPrompt}"
+          delay 0.5
+          key code 9 using {command down}  -- cmd+v
+          delay 2
+          ` : `
+          -- For English text, type directly
+          keystroke "${encodedPrompt}"
+          delay 2
+          `}
+          
+          -- Send the message using key code
+          key code 36  -- return key
+          delay 1
+          
+          -- Wait for ChatGPT to respond (user-specified wait time)
+          delay ${safeWaitTime}
+          
+          -- Get last text element (simple approach like getLastMessage)
+          set allElements to entire contents of window 1
+          set recentTexts to {}
+          
+          repeat with elem in allElements
+            try
+              if (role of elem) is "AXStaticText" then
+                set elemText to (description of elem)
+                if elemText is not missing value and elemText is not "" then
+                  set end of recentTexts to elemText
                 end if
-              else
-                -- Text changed, reset stable count
-                set stableCount to 0
-                set previousText to currentText
               end if
-              
-              -- Check for response completion indicators
-              if currentText contains "▍" then
-                -- ChatGPT is still typing (blinking cursor indicator)
-                set stableCount to 0
-              else if currentText contains "Regenerate" or currentText contains "Continue generating" then
-                -- Response likely complete if these UI elements are visible
-                set stableCount to stableCount + 1
-              end if
-            end repeat
-            
-            -- Final check for text content
-            if (count of conversationText) = 0 then
-              return "No response text found. ChatGPT may still be processing or encountered an error."
-            else
-              -- Extract just the latest response
-              set responseText to ""
-              try
-                -- Attempt to find the latest response by looking for patterns
-                set AppleScript's text item delimiters to linefeed
-                set fullText to conversationText as text
-                
-                -- Look for the prompt in the text to find where the response starts
-                set promptPattern to "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ')}"
-                if fullText contains promptPattern then
-                  set promptPos to offset of promptPattern in fullText
-                  if promptPos > 0 then
-                    -- Get text after the prompt
-                    set responseText to text from (promptPos + (length of promptPattern)) to end of fullText
-                  end if
-                end if
-                
-                -- If we couldn't find the prompt, return the full text
-                if responseText is "" then
-                  set responseText to fullText
-                end if
-                
-                return responseText
-              on error
-                -- Fallback to returning all text if parsing fails
-                return conversationText as text
-              end try
-            end if
-          end tell
+            end try
+          end repeat
+          
+          -- Return last text element
+          if (count of recentTexts) > 0 then
+            return item -1 of recentTexts
+          else
+            return "No response received from ChatGPT"
+          end if
         end tell
       end tell
     `;
 		const result = await runAppleScript(script);
-		
-		// Restore original clipboard content
-		await runAppleScript(`set the clipboard to "${encodedOriginalClipboard}"`);
 		
 		// Post-process the result to clean up any UI text that might have been captured
 		let cleanedResult = result
@@ -245,7 +210,7 @@ async function askChatGPT(
 			/^[A-Z].*[.!?]$/.test(cleanedResult); // Complete sentence structure
 			
 		if (cleanedResult.length > 0 && !isLikelyComplete) {
-			console.warn("Warning: ChatGPT response may be incomplete");
+			console.warn(`Warning: ChatGPT response may be incomplete (waited ${safeWaitTime}s)`);
 		}
 		
 		return cleanedResult;
@@ -253,6 +218,65 @@ async function askChatGPT(
 		console.error("Error interacting with ChatGPT:", error);
 		throw new Error(
 			`Failed to get response from ChatGPT: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+// Function to get the last ChatGPT message
+async function getLastMessage(): Promise<string> {
+	await checkChatGPTAccess();
+	try {
+		const script = `
+			tell application "ChatGPT"
+				activate
+				delay 1
+			end tell
+			
+			tell application "System Events"
+				tell process "ChatGPT"
+					if not (exists window 1) then
+						return "ChatGPT window not found"
+					end if
+					
+					-- 마지막 몇개 텍스트 요소만 가져오기 (간단한 버전)
+					set allElements to entire contents of window 1
+					set recentTexts to {}
+					
+					repeat with elem in allElements
+						try
+							if (role of elem) is "AXStaticText" then
+								set elemText to (description of elem)
+								if elemText is not missing value and elemText is not "" then
+									set end of recentTexts to elemText
+								end if
+							end if
+						end try
+					end repeat
+					
+					-- 마지막 텍스트 요소 반환 (가장 간단한 방법)
+					if (count of recentTexts) > 0 then
+						return item -1 of recentTexts
+					else
+						return "No messages found"
+					end if
+				end tell
+			end tell
+		`;
+		
+		const result = await runAppleScript(script);
+		let cleanedResult = result
+			.replace(/Regenerate( response)?/g, '')
+			.replace(/Continue generating/g, '')
+			.replace(/▍/g, '')
+			.trim();
+			
+		return cleanedResult || "No last message found";
+	} catch (error) {
+		console.error("Error getting last message from ChatGPT:", error);
+		throw new Error(
+			`Failed to get last message from ChatGPT: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
@@ -353,15 +377,16 @@ async function getConversations(): Promise<string[]> {
 }
 
 function isChatGPTArgs(args: unknown): args is {
-	operation: "ask" | "get_conversations";
+	operation: "ask" | "get_conversations" | "get_last_message";
 	prompt?: string;
 	conversation_id?: string;
+	wait_time?: number;
 } {
 	if (typeof args !== "object" || args === null) return false;
 
-	const { operation, prompt, conversation_id } = args as any;
+	const { operation, prompt, conversation_id, wait_time } = args as any;
 
-	if (!operation || !["ask", "get_conversations"].includes(operation)) {
+	if (!operation || !["ask", "get_conversations", "get_last_message"].includes(operation)) {
 		return false;
 	}
 
@@ -371,6 +396,7 @@ function isChatGPTArgs(args: unknown): args is {
 	// Validate field types if present
 	if (prompt && typeof prompt !== "string") return false;
 	if (conversation_id && typeof conversation_id !== "string") return false;
+	if (wait_time && typeof wait_time !== "number") return false;
 
 	return true;
 }
@@ -398,7 +424,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 						throw new Error("Prompt is required for ask operation");
 					}
 
-					const response = await askChatGPT(args.prompt, args.conversation_id);
+					const response = await askChatGPT(
+						args.prompt, 
+						args.conversation_id,
+						args.wait_time || 5
+					);
 
 					return {
 						content: [
@@ -422,6 +452,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 									conversations.length > 0
 										? `Found ${conversations.length} conversation(s):\n\n${conversations.join("\n")}`
 										: "No conversations found in ChatGPT.",
+							},
+						],
+						isError: false,
+					};
+				}
+
+				case "get_last_message": {
+					const lastMessage = await getLastMessage();
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: lastMessage || "No last message found.",
 							},
 						],
 						isError: false,

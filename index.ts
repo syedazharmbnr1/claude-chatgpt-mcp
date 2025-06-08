@@ -293,7 +293,7 @@ async function askChatGPT(
 	}
 }
 
-// Function to get the last ChatGPT message (askChatGPT와 동일한 구조)
+// Function to get the last ChatGPT message (모든 블럭 반환)
 async function getLastMessage(): Promise<string> {
 	await checkChatGPTAccess();
 	try {
@@ -309,7 +309,7 @@ async function getLastMessage(): Promise<string> {
             return "ChatGPT window not found"
           end if
           
-          -- Y 좌표 기반 텍스트 수집 및 정렬 (askChatGPT와 동일)
+          -- Y 좌표 기반 텍스트 수집 및 정렬
           set allElements to entire contents of window 1
           set textWithPositions to {}
           
@@ -347,15 +347,54 @@ async function getLastMessage(): Promise<string> {
               end if
             end repeat
           end repeat
-          
-          -- 모든 텍스트 반환 (질문 찾기 없이)
+
+          -- 마지막 메시지 블럭들 반환
           if (count of textWithPositions) > 0 then
-            set fullResponse to ""
-            repeat with textInfo in textWithPositions
-              set elemText to item 1 of textInfo
-              set fullResponse to fullResponse & elemText & "\\n\\n"
+            -- 마지막 메시지의 시작 인덱스 찾기: 위에서 아래로 내려가며, 마지막 "우리 질문" 이후부터가 마지막 메시지
+            set lastMsgStartIdx to 1
+            set lastMsgEndIdx to (count of textWithPositions)
+            -- 대화가 번갈아가며 쌓인다고 가정하고, 마지막 연속된 블럭 묶음 찾기
+            -- 아래에서 위로 올라가며, 빈 줄이거나 시스템 안내문이 아닌 첫 블럭부터 위로 같은 화자(답변) 블럭을 모두 포함
+            set lastSpeakerText to item 1 of item -1 of textWithPositions
+            set lastSpeakerIdx to (count of textWithPositions)
+            repeat with i from (count of textWithPositions) - 1 to 1 by -1
+              set curText to item 1 of item i of textWithPositions
+              -- 만약 현재 블럭이 마지막 블럭과 동일한 화자(즉, 답변의 일부)라면 포함
+              -- (여기서는 단순히 연속된 블럭을 묶음으로 처리)
+              -- 만약 중간에 "model context protocol 말한거야" 등 사용자의 질문이 나오면 멈춤
+              if curText is "model context protocol 말한거야" then
+                set lastMsgStartIdx to i + 1
+                exit repeat
+              end if
             end repeat
-            return fullResponse
+            -- 마지막 메시지 블럭들 합치기 (elemText만 추출)
+            set elemTextsOnly to {}
+            repeat with i from 1 to (count of textWithPositions)
+              set elemText to item 1 of item i of textWithPositions
+              set end of elemTextsOnly to elemText
+            end repeat
+            set lastMsgBlocks to {}
+            repeat with i from lastMsgStartIdx to lastMsgEndIdx
+              set blockText to item i of elemTextsOnly
+              set end of lastMsgBlocks to blockText
+            end repeat
+            set fullResponse to ""
+            repeat with blockText in lastMsgBlocks
+              set fullResponse to fullResponse & blockText & "\n"
+            end repeat
+            -- 연속된 빈 줄 제거 및 안전한 문자열 변환
+            set responseLines to every paragraph of fullResponse
+            set cleanedLines to {}
+            repeat with l in responseLines
+              if l is not "" then
+                set end of cleanedLines to l
+              end if
+            end repeat
+            set cleanedResponse to ""
+            repeat with l in cleanedLines
+              set cleanedResponse to cleanedResponse & l & "\n"
+            end repeat
+            return cleanedResponse
           else
             return "No messages found"
           end if

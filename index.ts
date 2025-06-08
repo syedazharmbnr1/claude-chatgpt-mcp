@@ -12,14 +12,14 @@ import { run } from "@jxa/run";
 // Define the ChatGPT tool
 const CHATGPT_TOOL: Tool = {
 	name: "chatgpt",
-	description: "Interact with the ChatGPT desktop app on macOS",
+	description: "Interact with the ChatGPT desktop app on macOS. Features: 1) 'ask' - Send prompts with customizable wait time (1-30s, default 12s) and get only the last ChatGPT response, 2) 'get_conversations' - List available conversations, 3) 'get_last_message' - Get the complete last ChatGPT response from current conversation. Wait time guidelines: Quick responses (greetings, simple questions): 5-8s, Medium responses (explanations, simple code): 10-15s, Complex responses (detailed analysis, long code): 15-20s, Very complex responses (comprehensive analysis): 20-30s.",
 	inputSchema: {
 		type: "object",
 		properties: {
 			operation: {
 				type: "string",
-				description: "Operation to perform: 'ask' or 'get_conversations'",
-				enum: ["ask", "get_conversations"],
+				description: "Operation to perform: 'ask' (send prompt and get last response), 'get_conversations' (list chats), or 'get_last_message' (get complete last ChatGPT response)",
+				enum: ["ask", "get_conversations", "get_last_message"],
 			},
 			prompt: {
 				type: "string",
@@ -30,6 +30,13 @@ const CHATGPT_TOOL: Tool = {
 				type: "string",
 				description:
 					"Optional conversation ID to continue a specific conversation",
+			},
+			wait_time: {
+				type: "number",
+				description:
+					"Time in seconds to wait for ChatGPT response (default: 12, max: 30). Choose based on expected response complexity: 5-8s for quick responses (greetings, simple questions), 10-15s for medium responses (explanations, simple code), 15-20s for complex responses (detailed analysis, long code), 20-30s for very complex responses (comprehensive analysis, extensive code).",
+				minimum: 1,
+				maximum: 30,
 			},
 		},
 		required: ["operation"],
@@ -81,13 +88,22 @@ async function checkChatGPTAccess(): Promise<boolean> {
 	}
 }
 
-// Function to send a prompt to ChatGPT
+// Function to send a prompt to ChatGPT (Y 좌표 기반 정렬 방식)
 async function askChatGPT(
 	prompt: string,
 	conversationId?: string,
+	waitTime: number = 12,
 ): Promise<string> {
 	await checkChatGPTAccess();
 	try {
+		// Validate and set wait time
+		const safeWaitTime = Math.min(Math.max(waitTime, 1), 30);
+		
+		// Function to check if text contains Korean characters
+		const hasKorean = (text: string): boolean => {
+			return /[가-힣ㄱ-ㅎㅏ-ㅣ]/.test(text);
+		};
+
 		// Function to properly encode text for AppleScript, including handling of Chinese characters
 		const encodeForAppleScript = (text: string): string => {
 			// Only escape double quotes, leave other characters as is
@@ -95,134 +111,152 @@ async function askChatGPT(
 		};
 
 		const encodedPrompt = encodeForAppleScript(prompt);
-		
-		// Save original clipboard content
-		const saveClipboardScript = `
-			set savedClipboard to the clipboard
-			return savedClipboard
-		`;
-		const originalClipboard = await runAppleScript(saveClipboardScript);
-		const encodedOriginalClipboard = encodeForAppleScript(originalClipboard);
+		const useClipboard = hasKorean(prompt);
 		
 		const script = `
       tell application "ChatGPT"
         activate
-        delay 1
-        tell application "System Events"
-          tell process "ChatGPT"
-            ${
-							conversationId
-								? `
-              try
-                click button "${conversationId}" of group 1 of group 1 of window 1
-                delay 1
-              end try
-            `
-								: ""
-						}
-            -- Clear any existing text in the input field
-            keystroke "a" using {command down}
-            keystroke (ASCII character 8) -- Delete key
-            delay 0.5
-            
-            -- Set the clipboard to the prompt text
-            set the clipboard to "${encodedPrompt}"
-            
-            -- Paste the prompt and send it
-            keystroke "v" using {command down}
-            delay 0.5
-            keystroke return
-            
-            -- Wait for the response with dynamic detection
-            set maxWaitTime to 120 -- Maximum wait time in seconds
-            set waitInterval to 1 -- Check interval in seconds
-            set totalWaitTime to 0
-            set previousText to ""
-            set stableCount to 0
-            set requiredStableChecks to 3 -- Number of consecutive stable checks required
-            
-            repeat while totalWaitTime < maxWaitTime
-              delay waitInterval
-              set totalWaitTime to totalWaitTime + waitInterval
-              
-              -- Get current text
-              set frontWin to front window
-              set allUIElements to entire contents of frontWin
-              set conversationText to {}
-              repeat with e in allUIElements
-                try
-                  if (role of e) is "AXStaticText" then
-                    set end of conversationText to (description of e)
+        delay 2
+      end tell
+      
+      tell application "System Events"
+        tell process "ChatGPT"
+          -- Check if ChatGPT window exists
+          if not (exists window 1) then
+            return "ChatGPT window not found"
+          end if
+          
+          ${
+						conversationId
+							? `
+            try
+              click button "${conversationId}" of group 1 of group 1 of window 1
+              delay 1
+            end try
+          `
+							: ""
+					}
+          
+          -- ChatGPT accepts direct keyboard input, no need to click specific elements
+          -- Clear any existing text using key codes
+          key code 0 using {command down}  -- cmd+a
+          delay 0.5
+          key code 51  -- delete key
+          delay 1.5
+          
+          ${useClipboard ? `
+          -- Use clipboard + key codes for Korean text
+          set the clipboard to "${encodedPrompt}"
+          delay 0.5
+          key code 9 using {command down}  -- cmd+v
+          delay 2
+          ` : `
+          -- For English text, type directly
+          keystroke "${encodedPrompt}"
+          delay 2
+          `}
+          
+          -- Send the message using key code
+          key code 36  -- return key
+          delay 1
+          
+          -- Wait for ChatGPT to respond (user-specified wait time)
+          delay ${safeWaitTime}
+          
+          -- Y 좌표 기반 텍스트 수집 및 정렬
+          set allElements to entire contents of window 1
+          set textWithPositions to {}
+          
+          -- 모든 텍스트 요소를 Y 좌표와 함께 수집
+          repeat with elem in allElements
+            try
+              if (role of elem) is "AXStaticText" then
+                set elemText to (description of elem)
+                if elemText is not missing value and elemText is not "" and length of elemText > 3 then
+                  -- 기본 UI 요소 필터링
+                  if elemText is not "text entry area" and elemText does not contain "New chat" then
+                    try
+                      set elemPosition to position of elem
+                      set yPos to item 2 of elemPosition
+                      set end of textWithPositions to {elemText, yPos}
+                    on error
+                      -- 위치 정보 없으면 기본값으로 추가
+                      set end of textWithPositions to {elemText, 0}
+                    end try
                   end if
-                end try
-              end repeat
-              
-              set AppleScript's text item delimiters to linefeed
-              set currentText to conversationText as text
-              
-              -- Check if text has stabilized (not changing anymore)
-              if currentText is equal to previousText then
-                set stableCount to stableCount + 1
-                if stableCount ≥ requiredStableChecks then
-                  -- Text has been stable for multiple checks, assume response is complete
-                  exit repeat
                 end if
-              else
-                -- Text changed, reset stable count
-                set stableCount to 0
-                set previousText to currentText
               end if
+            end try
+          end repeat
+          
+          -- Y 좌표 기준으로 정렬 (큰 값이 아래쪽/최신)
+          set listSize to count of textWithPositions
+          repeat with i from 1 to listSize - 1
+            repeat with j from 1 to listSize - i
+              set item1 to item j of textWithPositions
+              set item2 to item (j + 1) of textWithPositions
+              set yPos1 to item 2 of item1
+              set yPos2 to item 2 of item2
               
-              -- Check for response completion indicators
-              if currentText contains "▍" then
-                -- ChatGPT is still typing (blinking cursor indicator)
-                set stableCount to 0
-              else if currentText contains "Regenerate" or currentText contains "Continue generating" then
-                -- Response likely complete if these UI elements are visible
-                set stableCount to stableCount + 1
+              if yPos1 > yPos2 then
+                -- 위치 교환 (작은 Y값이 앞으로)
+                set item j of textWithPositions to item2
+                set item (j + 1) of textWithPositions to item1
               end if
             end repeat
+          end repeat
+          
+          -- 우리 질문 찾기 (Y 좌표로 정렬된 상태에서)
+          set ourQuestionIndex to 0
+          set questionText to "${encodedPrompt}"
+          
+          repeat with i from 1 to (count of textWithPositions)
+            set textInfo to item i of textWithPositions
+            set elemText to item 1 of textInfo
             
-            -- Final check for text content
-            if (count of conversationText) = 0 then
-              return "No response text found. ChatGPT may still be processing or encountered an error."
-            else
-              -- Extract just the latest response
-              set responseText to ""
-              try
-                -- Attempt to find the latest response by looking for patterns
-                set AppleScript's text item delimiters to linefeed
-                set fullText to conversationText as text
-                
-                -- Look for the prompt in the text to find where the response starts
-                set promptPattern to "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ')}"
-                if fullText contains promptPattern then
-                  set promptPos to offset of promptPattern in fullText
-                  if promptPos > 0 then
-                    -- Get text after the prompt
-                    set responseText to text from (promptPos + (length of promptPattern)) to end of fullText
-                  end if
-                end if
-                
-                -- If we couldn't find the prompt, return the full text
-                if responseText is "" then
-                  set responseText to fullText
-                end if
-                
-                return responseText
-              on error
-                -- Fallback to returning all text if parsing fails
-                return conversationText as text
-              end try
+            if elemText contains questionText then
+              set ourQuestionIndex to i
+              exit repeat
             end if
-          end tell
+          end repeat
+          
+          -- 우리 질문 이후의 모든 텍스트 수집 (최신 답변)
+          if ourQuestionIndex > 0 then
+            set responseTexts to {}
+            repeat with i from (ourQuestionIndex + 1) to (count of textWithPositions)
+              set textInfo to item i of textWithPositions
+              set elemText to item 1 of textInfo
+              set end of responseTexts to elemText
+            end repeat
+            
+            -- 답변 텍스트들 조합
+            if (count of responseTexts) > 0 then
+              set fullResponse to ""
+              repeat with responseText in responseTexts
+                set fullResponse to fullResponse & responseText & "\n\n"
+              end repeat
+              return fullResponse
+            else
+              return "No response found after question"
+            end if
+          else
+            -- 질문을 찾지 못한 경우, 가장 최신 텍스트들 반환
+            if (count of textWithPositions) > 5 then
+              set latestTexts to items -5 thru -1 of textWithPositions
+              set latestResponse to ""
+              repeat with textInfo in latestTexts
+                set elemText to item 1 of textInfo
+                set latestResponse to latestResponse & elemText & "\n\n"
+              end repeat
+              return latestResponse
+            else
+              return "No response received from ChatGPT"
+            end if
+          end if
         end tell
       end tell
     `;
 		const result = await runAppleScript(script);
-		
-		// Restore original clipboard content
-		await runAppleScript(`set the clipboard to "${encodedOriginalClipboard}"`);
 		
 		// Post-process the result to clean up any UI text that might have been captured
 		let cleanedResult = result
@@ -245,7 +279,7 @@ async function askChatGPT(
 			/^[A-Z].*[.!?]$/.test(cleanedResult); // Complete sentence structure
 			
 		if (cleanedResult.length > 0 && !isLikelyComplete) {
-			console.warn("Warning: ChatGPT response may be incomplete");
+			console.warn(`Warning: ChatGPT response may be incomplete (waited ${safeWaitTime}s)`);
 		}
 		
 		return cleanedResult;
@@ -253,6 +287,133 @@ async function askChatGPT(
 		console.error("Error interacting with ChatGPT:", error);
 		throw new Error(
 			`Failed to get response from ChatGPT: ${
+				error instanceof Error ? error.message : String(error)
+			}`,
+		);
+	}
+}
+
+// Function to get the last ChatGPT message (모든 블럭 반환)
+async function getLastMessage(): Promise<string> {
+	await checkChatGPTAccess();
+	try {
+		const script = `
+      tell application "ChatGPT"
+        activate
+        delay 1
+      end tell
+      
+      tell application "System Events"
+        tell process "ChatGPT"
+          if not (exists window 1) then
+            return "ChatGPT window not found"
+          end if
+          
+          -- Y 좌표 기반 텍스트 수집 및 정렬
+          set allElements to entire contents of window 1
+          set textWithPositions to {}
+          
+          repeat with elem in allElements
+            try
+              if (role of elem) is "AXStaticText" then
+                set elemText to (description of elem)
+                if elemText is not missing value and elemText is not "" and length of elemText > 3 then
+                  if elemText is not "text entry area" and elemText does not contain "New chat" then
+                    try
+                      set elemPosition to position of elem
+                      set yPos to item 2 of elemPosition
+                      set end of textWithPositions to {elemText, yPos}
+                    on error
+                      set end of textWithPositions to {elemText, 0}
+                    end try
+                  end if
+                end if
+              end if
+            end try
+          end repeat
+          
+          -- Y 좌표 기준으로 정렬
+          set listSize to count of textWithPositions
+          repeat with i from 1 to listSize - 1
+            repeat with j from 1 to listSize - i
+              set item1 to item j of textWithPositions
+              set item2 to item (j + 1) of textWithPositions
+              set yPos1 to item 2 of item1
+              set yPos2 to item 2 of item2
+              
+              if yPos1 > yPos2 then
+                set item j of textWithPositions to item2
+                set item (j + 1) of textWithPositions to item1
+              end if
+            end repeat
+          end repeat
+
+          -- 마지막 메시지 블럭들 반환
+          if (count of textWithPositions) > 0 then
+            -- 마지막 메시지의 시작 인덱스 찾기: 위에서 아래로 내려가며, 마지막 "우리 질문" 이후부터가 마지막 메시지
+            set lastMsgStartIdx to 1
+            set lastMsgEndIdx to (count of textWithPositions)
+            -- 대화가 번갈아가며 쌓인다고 가정하고, 마지막 연속된 블럭 묶음 찾기
+            -- 아래에서 위로 올라가며, 빈 줄이거나 시스템 안내문이 아닌 첫 블럭부터 위로 같은 화자(답변) 블럭을 모두 포함
+            set lastSpeakerText to item 1 of item -1 of textWithPositions
+            set lastSpeakerIdx to (count of textWithPositions)
+            repeat with i from (count of textWithPositions) - 1 to 1 by -1
+              set curText to item 1 of item i of textWithPositions
+              -- 만약 현재 블럭이 마지막 블럭과 동일한 화자(즉, 답변의 일부)라면 포함
+              -- (여기서는 단순히 연속된 블럭을 묶음으로 처리)
+              -- 만약 중간에 "model context protocol 말한거야" 등 사용자의 질문이 나오면 멈춤
+              if curText is "model context protocol 말한거야" then
+                set lastMsgStartIdx to i + 1
+                exit repeat
+              end if
+            end repeat
+            -- 마지막 메시지 블럭들 합치기 (elemText만 추출)
+            set elemTextsOnly to {}
+            repeat with i from 1 to (count of textWithPositions)
+              set elemText to item 1 of item i of textWithPositions
+              set end of elemTextsOnly to elemText
+            end repeat
+            set lastMsgBlocks to {}
+            repeat with i from lastMsgStartIdx to lastMsgEndIdx
+              set blockText to item i of elemTextsOnly
+              set end of lastMsgBlocks to blockText
+            end repeat
+            set fullResponse to ""
+            repeat with blockText in lastMsgBlocks
+              set fullResponse to fullResponse & blockText & "\n"
+            end repeat
+            -- 연속된 빈 줄 제거 및 안전한 문자열 변환
+            set responseLines to every paragraph of fullResponse
+            set cleanedLines to {}
+            repeat with l in responseLines
+              if l is not "" then
+                set end of cleanedLines to l
+              end if
+            end repeat
+            set cleanedResponse to ""
+            repeat with l in cleanedLines
+              set cleanedResponse to cleanedResponse & l & "\n"
+            end repeat
+            return cleanedResponse
+          else
+            return "No messages found"
+          end if
+        end tell
+      end tell
+    `;
+		
+		const result = await runAppleScript(script);
+		let cleanedResult = result
+			.replace(/Regenerate( response)?/g, '')
+			.replace(/Continue generating/g, '')
+			.replace(/▍/g, '')
+			.trim();
+			
+		return cleanedResult || "No last message found";
+	} catch (error) {
+		console.error("Error getting last message from ChatGPT:", error);
+		throw new Error(
+			`Failed to get last message from ChatGPT: ${
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
@@ -353,15 +514,16 @@ async function getConversations(): Promise<string[]> {
 }
 
 function isChatGPTArgs(args: unknown): args is {
-	operation: "ask" | "get_conversations";
+	operation: "ask" | "get_conversations" | "get_last_message";
 	prompt?: string;
 	conversation_id?: string;
+	wait_time?: number;
 } {
 	if (typeof args !== "object" || args === null) return false;
 
-	const { operation, prompt, conversation_id } = args as any;
+	const { operation, prompt, conversation_id, wait_time } = args as any;
 
-	if (!operation || !["ask", "get_conversations"].includes(operation)) {
+	if (!operation || !["ask", "get_conversations", "get_last_message"].includes(operation)) {
 		return false;
 	}
 
@@ -371,6 +533,7 @@ function isChatGPTArgs(args: unknown): args is {
 	// Validate field types if present
 	if (prompt && typeof prompt !== "string") return false;
 	if (conversation_id && typeof conversation_id !== "string") return false;
+	if (wait_time && typeof wait_time !== "number") return false;
 
 	return true;
 }
@@ -398,7 +561,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 						throw new Error("Prompt is required for ask operation");
 					}
 
-					const response = await askChatGPT(args.prompt, args.conversation_id);
+					const response = await askChatGPT(
+						args.prompt, 
+						args.conversation_id,
+						args.wait_time || 12
+					);
 
 					return {
 						content: [
@@ -422,6 +589,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 									conversations.length > 0
 										? `Found ${conversations.length} conversation(s):\n\n${conversations.join("\n")}`
 										: "No conversations found in ChatGPT.",
+							},
+						],
+						isError: false,
+					};
+				}
+
+				case "get_last_message": {
+					const lastMessage = await getLastMessage();
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: lastMessage || "No last message found.",
 							},
 						],
 						isError: false,

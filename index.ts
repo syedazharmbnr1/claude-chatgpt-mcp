@@ -88,7 +88,7 @@ async function checkChatGPTAccess(): Promise<boolean> {
 	}
 }
 
-// Function to send a prompt to ChatGPT
+// Function to send a prompt to ChatGPT (Y 좌표 기반 정렬 방식)
 async function askChatGPT(
 	prompt: string,
 	conversationId?: string,
@@ -163,26 +163,95 @@ async function askChatGPT(
           -- Wait for ChatGPT to respond (user-specified wait time)
           delay ${safeWaitTime}
           
-          -- Get last text element (simple approach like getLastMessage)
+          -- Y 좌표 기반 텍스트 수집 및 정렬
           set allElements to entire contents of window 1
-          set recentTexts to {}
+          set textWithPositions to {}
           
+          -- 모든 텍스트 요소를 Y 좌표와 함께 수집
           repeat with elem in allElements
             try
               if (role of elem) is "AXStaticText" then
                 set elemText to (description of elem)
-                if elemText is not missing value and elemText is not "" then
-                  set end of recentTexts to elemText
+                if elemText is not missing value and elemText is not "" and length of elemText > 3 then
+                  -- 기본 UI 요소 필터링
+                  if elemText is not "text entry area" and elemText does not contain "New chat" then
+                    try
+                      set elemPosition to position of elem
+                      set yPos to item 2 of elemPosition
+                      set end of textWithPositions to {elemText, yPos}
+                    on error
+                      -- 위치 정보 없으면 기본값으로 추가
+                      set end of textWithPositions to {elemText, 0}
+                    end try
+                  end if
                 end if
               end if
             end try
           end repeat
           
-          -- Return last text element
-          if (count of recentTexts) > 0 then
-            return item -1 of recentTexts
+          -- Y 좌표 기준으로 정렬 (큰 값이 아래쪽/최신)
+          set listSize to count of textWithPositions
+          repeat with i from 1 to listSize - 1
+            repeat with j from 1 to listSize - i
+              set item1 to item j of textWithPositions
+              set item2 to item (j + 1) of textWithPositions
+              set yPos1 to item 2 of item1
+              set yPos2 to item 2 of item2
+              
+              if yPos1 > yPos2 then
+                -- 위치 교환 (작은 Y값이 앞으로)
+                set item j of textWithPositions to item2
+                set item (j + 1) of textWithPositions to item1
+              end if
+            end repeat
+          end repeat
+          
+          -- 우리 질문 찾기 (Y 좌표로 정렬된 상태에서)
+          set ourQuestionIndex to 0
+          set questionText to "${encodedPrompt}"
+          
+          repeat with i from 1 to (count of textWithPositions)
+            set textInfo to item i of textWithPositions
+            set elemText to item 1 of textInfo
+            
+            if elemText contains questionText then
+              set ourQuestionIndex to i
+              exit repeat
+            end if
+          end repeat
+          
+          -- 우리 질문 이후의 모든 텍스트 수집 (최신 답변)
+          if ourQuestionIndex > 0 then
+            set responseTexts to {}
+            repeat with i from (ourQuestionIndex + 1) to (count of textWithPositions)
+              set textInfo to item i of textWithPositions
+              set elemText to item 1 of textInfo
+              set end of responseTexts to elemText
+            end repeat
+            
+            -- 답변 텍스트들 조합
+            if (count of responseTexts) > 0 then
+              set fullResponse to ""
+              repeat with responseText in responseTexts
+                set fullResponse to fullResponse & responseText & "\n\n"
+              end repeat
+              return fullResponse
+            else
+              return "No response found after question"
+            end if
           else
-            return "No response received from ChatGPT"
+            -- 질문을 찾지 못한 경우, 가장 최신 텍스트들 반환
+            if (count of textWithPositions) > 5 then
+              set latestTexts to items -5 thru -1 of textWithPositions
+              set latestResponse to ""
+              repeat with textInfo in latestTexts
+                set elemText to item 1 of textInfo
+                set latestResponse to latestResponse & elemText & "\n\n"
+              end repeat
+              return latestResponse
+            else
+              return "No response received from ChatGPT"
+            end if
           end if
         end tell
       end tell
@@ -240,26 +309,63 @@ async function getLastMessage(): Promise<string> {
 						return "ChatGPT window not found"
 					end if
 					
-					-- Get only the last few text elements (simplified version)
+					-- Smart collection: get recent meaningful conversation block
 					set allElements to entire contents of window 1
-					set recentTexts to {}
+					set allTexts to {}
 					
+					-- Collect all meaningful texts
 					repeat with elem in allElements
 						try
 							if (role of elem) is "AXStaticText" then
 								set elemText to (description of elem)
 								if elemText is not missing value and elemText is not "" then
-									set end of recentTexts to elemText
+									-- Filter out UI elements
+									if length of elemText > 5 and elemText is not "text entry area" and elemText does not contain "New chat" and elemText does not contain "Regenerate" then
+										set end of allTexts to elemText
+									end if
 								end if
 							end if
 						end try
 					end repeat
 					
-					-- Return the last text element (simplest method)
-					if (count of recentTexts) > 0 then
-						return item -1 of recentTexts
+					-- Look for the most recent user question (usually ends with ? or contains question keywords)
+					set lastQuestionIndex to 0
+					set textCount to count of allTexts
+					
+					-- Find the last question by looking backwards
+					repeat with i from textCount down to (textCount - 10)
+						if i > 0 then
+							set currentText to item i of allTexts
+							-- Look for question patterns
+							if currentText ends with "?" or currentText ends with "요?" or currentText ends with "세요." or currentText ends with "주세요." then
+								set lastQuestionIndex to i
+								exit repeat
+							end if
+						end if
+					end repeat
+					
+					-- Collect all texts after the last question
+					if lastQuestionIndex > 0 and lastQuestionIndex < textCount then
+						set responseTexts to items (lastQuestionIndex + 1) thru textCount of allTexts
+						set fullResponse to ""
+						repeat with responseText in responseTexts
+							set fullResponse to fullResponse & responseText & "\n\n"
+						end repeat
+						return fullResponse
 					else
-						return "No messages found"
+						-- Fallback: return last several meaningful texts
+						if textCount > 5 then
+							set lastTexts to items -5 thru -1 of allTexts
+							set combinedText to ""
+							repeat with textItem in lastTexts
+								set combinedText to combinedText & textItem & "\n\n"
+							end repeat
+							return combinedText
+						else if textCount > 0 then
+							return item -1 of allTexts
+						else
+							return "No messages found"
+						end if
 					end if
 				end tell
 			end tell

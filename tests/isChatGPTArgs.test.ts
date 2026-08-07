@@ -1,4 +1,8 @@
 import { describe, it, expect, mock, spyOn } from "bun:test";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 let speechError: Error | null = null;
 const execFileMock = mock(
@@ -22,6 +26,25 @@ import * as index from "../index";
 
 // Stub checkChatGPTAccess to avoid real AppleScript
 spyOn(index, "checkChatGPTAccess").mockResolvedValue(true);
+
+describe("isMainModule", () => {
+  it("recognizes a symlinked executable as the direct entry point", () => {
+    const temporaryDirectory = mkdtempSync(
+      join(tmpdir(), "claude-chatgpt-mcp-entry-"),
+    );
+    const modulePath = fileURLToPath(new URL("../index.ts", import.meta.url));
+    const executablePath = join(temporaryDirectory, "claude-chatgpt-mcp");
+    symlinkSync(modulePath, executablePath);
+
+    try {
+      expect(
+        index.isMainModule(pathToFileURL(modulePath).href, executablePath),
+      ).toBe(true);
+    } finally {
+      rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("isChatGPTArgs", () => {
   it("accepts speak boolean", () => {

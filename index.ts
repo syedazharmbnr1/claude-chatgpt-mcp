@@ -9,6 +9,7 @@ import {
 import { runAppleScript } from "run-applescript";
 import { run } from "@jxa/run";
 import { execFile } from "child_process";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "url";
 
 // Define the ChatGPT tool
@@ -473,9 +474,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 const transport = new StdioServerTransport();
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+function isMainModule(
+	moduleUrl: string,
+	executablePath = process.argv[1],
+): boolean {
+	if (!executablePath) return false;
+
+	try {
+		return (
+			realpathSync(executablePath) ===
+			realpathSync(fileURLToPath(moduleUrl))
+		);
+	} catch {
+		return false;
+	}
+}
+
+if (isMainModule(import.meta.url)) {
         await server.connect(transport);
         console.error("ChatGPT MCP Server running on stdio");
 }
 
-export { askChatGPT, isChatGPTArgs };
+export { askChatGPT, isChatGPTArgs, isMainModule };

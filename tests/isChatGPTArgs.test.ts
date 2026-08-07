@@ -1,8 +1,18 @@
 import { describe, it, expect, mock, spyOn } from "bun:test";
 
-// Mock child_process.exec
+let speechError: Error | null = null;
+const execFileMock = mock(
+  (
+    _file: string,
+    _args: string[],
+    callback?: (error: Error | null) => void,
+  ) => callback?.(speechError),
+);
+
+// Mock the external text-to-speech process.
 mock.module("child_process", () => ({
-  exec: mock(() => {})
+  exec: mock(() => {}),
+  execFile: execFileMock,
 }));
 
 // Mock run-applescript to always resolve with text
@@ -27,10 +37,30 @@ describe("isChatGPTArgs", () => {
 
 describe("askChatGPT", () => {
   it("calls say when speak is true", async () => {
-    const child = await import("child_process");
-    const execSpy = spyOn(child, "exec");
     const result = await index.askChatGPT("Hi", undefined, true);
     expect(result).toBe("Hello world");
-    expect(execSpy).toHaveBeenCalled();
+    expect(execFileMock).toHaveBeenCalledWith(
+      "say",
+      ["Hello world"],
+      expect.any(Function),
+    );
+  });
+
+  it("reports say failures without failing the ChatGPT response", async () => {
+    speechError = new Error("say unavailable");
+    const consoleError = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await index.askChatGPT("Hi", undefined, true);
+
+      expect(result).toBe("Hello world");
+      expect(consoleError).toHaveBeenCalledWith(
+        "Error during text-to-speech:",
+        speechError,
+      );
+    } finally {
+      speechError = null;
+      consoleError.mockRestore();
+    }
   });
 });

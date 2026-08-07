@@ -8,7 +8,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { runAppleScript } from "run-applescript";
 import { run } from "@jxa/run";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import { fileURLToPath } from "url";
 
 // Define the ChatGPT tool
@@ -256,7 +256,11 @@ async function askChatGPT(
                 }
 
                 if (speak) {
-                        exec(`say ${JSON.stringify(cleanedResult)}`);
+                        execFile("say", [cleanedResult], (error) => {
+                                if (error) {
+                                        console.error("Error during text-to-speech:", error);
+                                }
+                        });
                 }
 
                 return cleanedResult;
